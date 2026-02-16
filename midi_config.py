@@ -3,6 +3,8 @@ import os
 import csv
 import keyboard
 
+ALLOWED_TYPES = ['Emotes', 'AFK', 'Operation']
+
 # ------------------------ Device Selection ------------------------
 print("Available MIDI input devices:")
 input_names = mido.get_input_names()
@@ -105,11 +107,13 @@ with mido.open_input(device_name) as inport:
 
                 # Select button type
                 while True:
-                    btn_type = input(f"Select type for button {note} ('Emotes' or 'AFK'): ").strip()
-                    if btn_type in ['Emotes', 'AFK']:
+                    btn_type = input(
+                        f"Select type for button {note} ('Emotes', 'AFK', or 'Operation'): "
+                    ).strip()
+                    if btn_type in ALLOWED_TYPES:
                         break
                     else:
-                        print("Invalid type. Please enter 'Emotes' or 'AFK'.")
+                        print("Invalid type. Please enter 'Emotes', 'AFK', or 'Operation'.")
 
                 # Save to CSV
                 with open(csv_file_name, 'a', newline='') as csv_file:

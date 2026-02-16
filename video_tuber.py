@@ -68,6 +68,8 @@ CA_SHIFT = 4
 FRAME_ENDED = False
 video_requests = queue.Queue()
 sm_video_request = queue.Queue()
+operation_requests = queue.Queue()
+OPERATION_COMMANDS = {"Reset"}
 
 # Thread-safe queues
 audio_queue = queue.Queue()
@@ -334,6 +336,9 @@ class StateMachine(VideoPlayer, Filters):
         self.select_random_video(self.current_state.videos)
 
     def update(self):
+        if self.process_operations():
+            return
+
         # Iterate through the transitions in the current state
         for next_state_name, rule_name, config in self.current_state.transitions:
 
@@ -351,6 +356,25 @@ class StateMachine(VideoPlayer, Filters):
 
                         # Switch to next state
                         self.switch_state(next_state_name)
+
+    def process_operations(self):
+        global FRAME_ENDED
+
+        operation_applied = False
+        try:
+            while True:
+                op_name = operation_requests.get_nowait()
+
+                if op_name == "Reset":
+                    FRAME_ENDED = True
+                    self.start_transition_filter()
+                    self.switch_state("Idle")
+                    safe_print("[StateMachine] Operation applied: Reset -> Idle")
+                    operation_applied = True
+        except queue.Empty:
+            pass
+
+        return operation_applied
 
     def switch_state(self, new_state_name):
         global FRAME_ENDED
@@ -454,6 +478,17 @@ def handle_client(client_socket, address, stop_event):
 
                 if not command_type:
                     safe_print(f"[{address}] Empty command_type in message: {message}")
+                    continue
+                if not command_data:
+                    safe_print(f"[{address}] Empty command_data in message: {message}")
+                    continue
+
+                if command_type.lower() == "operation":
+                    if command_data in OPERATION_COMMANDS:
+                        if command_data == "Reset":
+                            operation_requests.put(command_data)
+                    else:
+                        safe_print(f"[{address}] Unknown Operation command: {command_data}")
                     continue
 
                 video_requests.put((command_type, command_data))
