@@ -106,18 +106,25 @@ STATES = {
         name="Idle",
         video_random=True,
         transitions=[("Talking", "MIC", (AUDIO_THRESHOLD_NOISE, NOISE_DURATION, "POSITIVE")),
-                     ("Emotes", "MIDI", (None))]
+                     ("Emotes", "MIDI", ("Emotes",)),
+                     ("AFK", "MIDI", ("AFK",))]
     ),
     "Talking": StateStruct(
         name="Talking",
         video_random=True,
         transitions=[("Idle", "MIC", (AUDIO_THRESHOLD_SILENCE, SILENCE_DURATION, "NEGATIVE")),
-                     ("Emotes", "MIDI", (None))]
+                     ("Emotes", "MIDI", ("Emotes",)),
+                     ("AFK", "MIDI", ("AFK",))]
     ),
     "Emotes": StateStruct(
         name="Emotes",
         video_random=False,
         transitions=[("Idle", "Inactivity", (None))]
+    ),
+    "AFK": StateStruct(
+        name="Emotes",
+        video_random=True,
+        transitions=[("Idle", "MIDI", ("None",))]
     ),
 }
 
@@ -438,9 +445,18 @@ def handle_client(client_socket, address, stop_event):
                 safe_print(f"[{address}] Received raw: {message}")
 
                 parts = message.split(",", 1)
-                first_param = parts[0].strip()
+                if len(parts) != 2:
+                    safe_print(f"[{address}] Invalid message format: {message}")
+                    continue
 
-                video_requests.put(first_param)
+                command_type = parts[0].strip()
+                command_data = parts[1].strip()
+
+                if not command_type:
+                    safe_print(f"[{address}] Empty command_type in message: {message}")
+                    continue
+
+                video_requests.put((command_type, command_data))
 
             except socket.timeout:
                 continue
@@ -472,15 +488,25 @@ def midi_init(stop_event):
     return server, thread
 
 ###### CALLBACK
-def midi_callback():
+def midi_callback(command_type):
     result = False
+    unmatched_requests = []
     try:
         while True:
-            v = video_requests.get_nowait()
-            sm_video_request.put(v)
-            result = True
+            req_command_type, req_data = video_requests.get_nowait()
+
+            if req_command_type == command_type:
+                sm_video_request.put(req_data)
+                result = True
+            else:
+                # Keep unmatched commands so other MIDI transitions can process them.
+                unmatched_requests.append((req_command_type, req_data))
     except queue.Empty:
         pass
+
+    for req in unmatched_requests:
+        video_requests.put(req)
+
     return result
 
 ### List of rules

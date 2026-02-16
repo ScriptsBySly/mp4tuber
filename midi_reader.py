@@ -167,7 +167,7 @@ def main():
                         print(f"Button pressed: Tag='{tag}', Type='{btn_type}'")
 
                         # Send to server
-                        message = f"{tag},{btn_type}"
+                        message = f"{btn_type},{tag}"
                         client.sendall(message.encode('utf-8'))
 
                         # Mark as pressed for this session

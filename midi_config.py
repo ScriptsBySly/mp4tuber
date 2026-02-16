@@ -105,11 +105,11 @@ with mido.open_input(device_name) as inport:
 
                 # Select button type
                 while True:
-                    btn_type = input(f"Select type for button {note} ('Toggle' or 'Press'): ").strip()
-                    if btn_type in ['Toggle', 'Press']:
+                    btn_type = input(f"Select type for button {note} ('Emotes' or 'AFK'): ").strip()
+                    if btn_type in ['Emotes', 'AFK']:
                         break
                     else:
-                        print("Invalid type. Please enter 'Toggle' or 'Press'.")
+                        print("Invalid type. Please enter 'Emotes' or 'AFK'.")
 
                 # Save to CSV
                 with open(csv_file_name, 'a', newline='') as csv_file:
