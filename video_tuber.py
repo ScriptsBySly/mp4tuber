@@ -120,7 +120,7 @@ STATES = {
     ),
     "Loop": StateStruct(
         name="Loop",
-        video_random=True,
+        video_random=False,
         transitions=[("Idle", "MIDI", ("None",))]
     ),
 }
