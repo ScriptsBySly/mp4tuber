@@ -1,11 +1,13 @@
 import os
 import shutil
 import subprocess
+import json
 import threading
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
 from tkinter import simpledialog
+from tkinter import filedialog
 from tkinter.scrolledtext import ScrolledText
 
 import midi_config as midi_cfg
@@ -31,6 +33,16 @@ class VideoTuberGUI(tk.Tk):
         self._ui_tick()
 
     def _build_ui(self):
+        menubar = tk.Menu(self)
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="Load", command=self.load_gui_settings)
+        file_menu.add_command(label="Save", command=self.save_gui_settings)
+        file_menu.add_separator()
+        file_menu.add_command(label="Load Backup", command=self.load_gui_settings_backup)
+        file_menu.add_command(label="Save Backup", command=self.save_gui_settings_backup)
+        menubar.add_cascade(label="File", menu=file_menu)
+        self.config(menu=menubar)
+
         root = ttk.Frame(self, padding=12)
         root.pack(fill=tk.BOTH, expand=True)
 
@@ -70,18 +82,38 @@ class VideoTuberGUI(tk.Tk):
         ttk.Button(btn_row, text="Stop", command=self.stop_engine).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(btn_row, text="Reset", command=self.send_reset).pack(side=tk.LEFT, padx=(6, 0))
 
-        config_box = ttk.LabelFrame(left, text="Config", padding=8)
-        config_box.pack(fill=tk.X)
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(4, 8))
+        ttk.Label(left, text="Configuration").pack(anchor=tk.W, pady=(0, 6))
 
         self.entries = {}
-        self._add_entry(config_box, "Window Name", "window_name", vt.WINDOW_NAME)
-        self._add_entry(config_box, "Width", "screen_width", str(vt.SCREEN_WIDTH))
-        self._add_entry(config_box, "Height", "screen_height", str(vt.SCREEN_HEIGHT))
-        self._add_entry(config_box, "Mic Device", "mic_index", str(vt.MIC_DEVICE_INDEX))
-        self._add_entry(config_box, "Noise Thresh", "noise_thresh", str(vt.AUDIO_THRESHOLD_NOISE))
-        self._add_entry(config_box, "Noise Dur", "noise_dur", str(vt.NOISE_DURATION))
-        self._add_entry(config_box, "Silence Thresh", "silence_thresh", str(vt.AUDIO_THRESHOLD_SILENCE))
-        self._add_entry(config_box, "Silence Dur", "silence_dur", str(vt.SILENCE_DURATION))
+
+        window_box = ttk.LabelFrame(left, text="Window", padding=8)
+        window_box.pack(fill=tk.X)
+        self._add_entry(window_box, "Window Name", "window_name", vt.WINDOW_NAME)
+        self._add_entry(window_box, "Width", "screen_width", str(vt.SCREEN_WIDTH))
+        self._add_entry(window_box, "Height", "screen_height", str(vt.SCREEN_HEIGHT))
+
+        mic_box = ttk.LabelFrame(left, text="Microphone", padding=8)
+        mic_box.pack(fill=tk.X, pady=(8, 0))
+        mic_row = ttk.Frame(mic_box)
+        mic_row.pack(fill=tk.X, pady=2)
+        ttk.Label(mic_row, text="Mic Device", width=14).pack(side=tk.LEFT)
+        self.mic_device_var = tk.StringVar(value="")
+        self.mic_device_combo = ttk.Combobox(
+            mic_row, textvariable=self.mic_device_var, state="readonly"
+        )
+        self.mic_device_combo.configure(width=45)
+        self.mic_device_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        mic_refresh_row = ttk.Frame(mic_box)
+        mic_refresh_row.pack(fill=tk.X, pady=(4, 2))
+        ttk.Button(mic_refresh_row, text="Refresh", command=self.refresh_mic_devices).pack(
+            side=tk.LEFT
+        )
+        self._add_entry(mic_box, "Noise Thresh", "noise_thresh", str(vt.AUDIO_THRESHOLD_NOISE))
+        self._add_entry(mic_box, "Noise Dur", "noise_dur", str(vt.NOISE_DURATION))
+        self._add_entry(mic_box, "Silence Thresh", "silence_thresh", str(vt.AUDIO_THRESHOLD_SILENCE))
+        self._add_entry(mic_box, "Silence Dur", "silence_dur", str(vt.SILENCE_DURATION))
 
         flags_box = ttk.LabelFrame(left, text="Filters", padding=8)
         flags_box.pack(fill=tk.X, pady=(12, 0))
@@ -217,6 +249,7 @@ class VideoTuberGUI(tk.Tk):
 
         self.refresh_midi_devices()
         self.refresh_midi_files()
+        self.refresh_mic_devices()
 
     def _add_entry(self, parent, label, key, default_value):
         row = ttk.Frame(parent)
@@ -258,7 +291,7 @@ class VideoTuberGUI(tk.Tk):
             vt.WINDOW_NAME = self.entries["window_name"].get().strip() or vt.WINDOW_NAME
             vt.SCREEN_WIDTH = int(self.entries["screen_width"].get())
             vt.SCREEN_HEIGHT = int(self.entries["screen_height"].get())
-            vt.MIC_DEVICE_INDEX = int(self.entries["mic_index"].get())
+            vt.MIC_DEVICE_INDEX = self._get_selected_mic_index()
             vt.AUDIO_THRESHOLD_NOISE = float(self.entries["noise_thresh"].get())
             vt.NOISE_DURATION = float(self.entries["noise_dur"].get())
             vt.AUDIO_THRESHOLD_SILENCE = float(self.entries["silence_thresh"].get())
@@ -333,6 +366,43 @@ class VideoTuberGUI(tk.Tk):
                 self.midi_device_var.set(devices[0])
         else:
             self.midi_device_var.set("")
+
+    def refresh_mic_devices(self):
+        if not hasattr(self, "mic_device_combo"):
+            return
+        try:
+            import sounddevice as sd
+        except Exception as exc:
+            self._log(f"Mic device list error: {exc}")
+            self.mic_device_combo["values"] = []
+            self.mic_device_var.set("")
+            return
+
+        devices = []
+        for idx, dev in enumerate(sd.query_devices()):
+            if dev.get("max_input_channels", 0) > 0:
+                devices.append(f"{idx}: {dev.get('name', '')}")
+
+        self.mic_device_combo["values"] = devices
+        if devices:
+            selected = f"{vt.MIC_DEVICE_INDEX}:"
+            match = None
+            for item in devices:
+                if item.startswith(selected):
+                    match = item
+                    break
+            self.mic_device_var.set(match or devices[0])
+        else:
+            self.mic_device_var.set("")
+
+    def _get_selected_mic_index(self):
+        text = self.mic_device_var.get().strip()
+        if not text:
+            return vt.MIC_DEVICE_INDEX
+        try:
+            return int(text.split(":", 1)[0])
+        except Exception:
+            return vt.MIC_DEVICE_INDEX
 
     def open_selected_midi_file(self):
         folder = os.path.join(os.getcwd(), "midi_configs")
@@ -853,6 +923,191 @@ class VideoTuberGUI(tk.Tk):
             self.loaded_file_label.configure(text=filename)
         else:
             self.loaded_file_label.configure(text="No file loaded")
+
+    def save_gui_settings(self):
+        settings = {
+            "window_name": self.entries["window_name"].get().strip(),
+            "screen_width": self.entries["screen_width"].get().strip(),
+            "screen_height": self.entries["screen_height"].get().strip(),
+            "mic_device_index": self._get_selected_mic_index(),
+            "noise_thresh": self.entries["noise_thresh"].get().strip(),
+            "noise_dur": self.entries["noise_dur"].get().strip(),
+            "silence_thresh": self.entries["silence_thresh"].get().strip(),
+            "silence_dur": self.entries["silence_dur"].get().strip(),
+            "filters": {
+                "glitch": bool(self.glitch_var.get()),
+                "vhs": bool(self.vhs_var.get()),
+                "scanlines": bool(self.scanline_var.get()),
+                "chromatic": bool(self.ca_var.get()),
+            },
+            "midi_defaults": {
+                "device": self.midi_device_var.get().strip(),
+                "config": self.midi_config_var.get().strip(),
+            },
+        }
+        try:
+            with open("gui_settings.json", "w", encoding="utf-8") as f:
+                json.dump(settings, f, indent=2)
+            self._log("GUI settings saved")
+        except Exception as exc:
+            self._log(f"Save settings failed: {exc}")
+
+    def load_gui_settings(self):
+        try:
+            with open("gui_settings.json", "r", encoding="utf-8") as f:
+                settings = json.load(f)
+        except Exception as exc:
+            self._log(f"Load settings failed: {exc}")
+            return
+
+        self.entries["window_name"].delete(0, tk.END)
+        self.entries["window_name"].insert(0, settings.get("window_name", vt.WINDOW_NAME))
+
+        self.entries["screen_width"].delete(0, tk.END)
+        self.entries["screen_width"].insert(0, settings.get("screen_width", vt.SCREEN_WIDTH))
+
+        self.entries["screen_height"].delete(0, tk.END)
+        self.entries["screen_height"].insert(0, settings.get("screen_height", vt.SCREEN_HEIGHT))
+
+        self.entries["noise_thresh"].delete(0, tk.END)
+        self.entries["noise_thresh"].insert(0, settings.get("noise_thresh", vt.AUDIO_THRESHOLD_NOISE))
+
+        self.entries["noise_dur"].delete(0, tk.END)
+        self.entries["noise_dur"].insert(0, settings.get("noise_dur", vt.NOISE_DURATION))
+
+        self.entries["silence_thresh"].delete(0, tk.END)
+        self.entries["silence_thresh"].insert(0, settings.get("silence_thresh", vt.AUDIO_THRESHOLD_SILENCE))
+
+        self.entries["silence_dur"].delete(0, tk.END)
+        self.entries["silence_dur"].insert(0, settings.get("silence_dur", vt.SILENCE_DURATION))
+
+        self.glitch_var.set(bool(settings.get("filters", {}).get("glitch", vt.GLITCH_ENABLE)))
+        self.vhs_var.set(bool(settings.get("filters", {}).get("vhs", vt.ENABLE_VHS)))
+        self.scanline_var.set(bool(settings.get("filters", {}).get("scanlines", vt.SCANLINE_ENABLE)))
+        self.ca_var.set(bool(settings.get("filters", {}).get("chromatic", vt.ENABLE_CA)))
+
+        self.refresh_mic_devices()
+        mic_idx = settings.get("mic_device_index", vt.MIC_DEVICE_INDEX)
+        if hasattr(self, "mic_device_combo") and self.mic_device_combo["values"]:
+            match = None
+            for item in self.mic_device_combo["values"]:
+                if item.startswith(f"{mic_idx}:"):
+                    match = item
+                    break
+            if match:
+                self.mic_device_var.set(match)
+
+        self.refresh_midi_devices()
+        midi_defaults = settings.get("midi_defaults", {})
+        midi_device = midi_defaults.get("device", "")
+        if midi_device:
+            self.midi_device_var.set(midi_device)
+
+        self.refresh_midi_files()
+        midi_config = midi_defaults.get("config", "")
+        if midi_config and midi_config in self.midi_combo["values"]:
+            self.midi_config_var.set(midi_config)
+
+        self._log("GUI settings loaded")
+
+    def save_gui_settings_backup(self):
+        path = filedialog.asksaveasfilename(
+            title="Save GUI Settings",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            settings = {
+                "window_name": self.entries["window_name"].get().strip(),
+                "screen_width": self.entries["screen_width"].get().strip(),
+                "screen_height": self.entries["screen_height"].get().strip(),
+                "mic_device_index": self._get_selected_mic_index(),
+                "noise_thresh": self.entries["noise_thresh"].get().strip(),
+                "noise_dur": self.entries["noise_dur"].get().strip(),
+                "silence_thresh": self.entries["silence_thresh"].get().strip(),
+                "silence_dur": self.entries["silence_dur"].get().strip(),
+                "filters": {
+                    "glitch": bool(self.glitch_var.get()),
+                    "vhs": bool(self.vhs_var.get()),
+                    "scanlines": bool(self.scanline_var.get()),
+                    "chromatic": bool(self.ca_var.get()),
+                },
+                "midi_defaults": {
+                    "device": self.midi_device_var.get().strip(),
+                    "config": self.midi_config_var.get().strip(),
+                },
+            }
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(settings, f, indent=2)
+            self._log("GUI settings backup saved")
+        except Exception as exc:
+            self._log(f"Save backup failed: {exc}")
+
+    def load_gui_settings_backup(self):
+        path = filedialog.askopenfilename(
+            title="Load GUI Settings",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                settings = json.load(f)
+        except Exception as exc:
+            self._log(f"Load backup failed: {exc}")
+            return
+
+        self.entries["window_name"].delete(0, tk.END)
+        self.entries["window_name"].insert(0, settings.get("window_name", vt.WINDOW_NAME))
+
+        self.entries["screen_width"].delete(0, tk.END)
+        self.entries["screen_width"].insert(0, settings.get("screen_width", vt.SCREEN_WIDTH))
+
+        self.entries["screen_height"].delete(0, tk.END)
+        self.entries["screen_height"].insert(0, settings.get("screen_height", vt.SCREEN_HEIGHT))
+
+        self.entries["noise_thresh"].delete(0, tk.END)
+        self.entries["noise_thresh"].insert(0, settings.get("noise_thresh", vt.AUDIO_THRESHOLD_NOISE))
+
+        self.entries["noise_dur"].delete(0, tk.END)
+        self.entries["noise_dur"].insert(0, settings.get("noise_dur", vt.NOISE_DURATION))
+
+        self.entries["silence_thresh"].delete(0, tk.END)
+        self.entries["silence_thresh"].insert(0, settings.get("silence_thresh", vt.AUDIO_THRESHOLD_SILENCE))
+
+        self.entries["silence_dur"].delete(0, tk.END)
+        self.entries["silence_dur"].insert(0, settings.get("silence_dur", vt.SILENCE_DURATION))
+
+        self.glitch_var.set(bool(settings.get("filters", {}).get("glitch", vt.GLITCH_ENABLE)))
+        self.vhs_var.set(bool(settings.get("filters", {}).get("vhs", vt.ENABLE_VHS)))
+        self.scanline_var.set(bool(settings.get("filters", {}).get("scanlines", vt.SCANLINE_ENABLE)))
+        self.ca_var.set(bool(settings.get("filters", {}).get("chromatic", vt.ENABLE_CA)))
+
+        self.refresh_mic_devices()
+        mic_idx = settings.get("mic_device_index", vt.MIC_DEVICE_INDEX)
+        if hasattr(self, "mic_device_combo") and self.mic_device_combo["values"]:
+            match = None
+            for item in self.mic_device_combo["values"]:
+                if item.startswith(f"{mic_idx}:"):
+                    match = item
+                    break
+            if match:
+                self.mic_device_var.set(match)
+
+        self.refresh_midi_devices()
+        midi_defaults = settings.get("midi_defaults", {})
+        midi_device = midi_defaults.get("device", "")
+        if midi_device:
+            self.midi_device_var.set(midi_device)
+
+        self.refresh_midi_files()
+        midi_config = midi_defaults.get("config", "")
+        if midi_config and midi_config in self.midi_combo["values"]:
+            self.midi_config_var.set(midi_config)
+
+        self._log("GUI settings backup loaded")
 
     def start_engine(self):
         if self._engine_thread and self._engine_thread.is_alive():
