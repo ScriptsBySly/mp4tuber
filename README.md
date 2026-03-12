@@ -25,6 +25,8 @@ You can save the program settings on the drop down menu at the top left. Save/Lo
 ## Video player
 
 ### Start the video player
+(Configure the microphone input first. See Microphone section a few sections below).
+
 Press the "Start" button on the "Video" tab. You can stop the player by pressing "Stop" or press ESC on your keyboard with the video player window selected. 
 
 ### Available settings
