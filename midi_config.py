@@ -1,126 +1,178 @@
-import mido
+import sys
 import os
-import csv
+import json
+import mido
 import keyboard
 
-ALLOWED_TYPES = ['Emotes', 'AFK', 'Operation']
+ALLOWED_TYPES = ["Emotes", "AFK", "Operation"]
 
-# ------------------------ Device Selection ------------------------
-print("Available MIDI input devices:")
-input_names = mido.get_input_names()
-for i, name in enumerate(input_names):
-    print(f"{i}: {name}")
 
-while True:
-    try:
-        selection = int(input("Select a MIDI device by number: "))
-        device_name = input_names[selection]
-        break
-    except (ValueError, IndexError):
-        print("Invalid selection. Try again.")
+def list_input_devices():
+    return mido.get_input_names()
 
-# ------------------------ File Handling ------------------------
-# Folder for MIDI files
-folder_name = "midi_configs"
-os.makedirs(folder_name, exist_ok=True)
 
-# List existing CSV files
-existing_files = [f for f in os.listdir(folder_name) if f.endswith(".csv")]
-if existing_files:
-    print("Existing files:")
-    for i, f in enumerate(existing_files):
-        print(f"{i}: {f}")
-    print(f"{len(existing_files)}: Create a new file")
+def select_device_cli(preselected=None):
+    print("Available MIDI input devices:")
+    input_names = list_input_devices()
+    for i, name in enumerate(input_names):
+        print(f"{i}: {name}")
+
+    if preselected and preselected in input_names:
+        print(f"Using preselected device: {preselected}")
+        return preselected
 
     while True:
         try:
-            choice = int(input("Select a file to edit or create new: "))
-            if choice == len(existing_files):
-                # Determine next numeric suffix
-                base = device_name.replace(" ", "_")
-                suffixes = [int(f.split("_")[-1].split(".")[0]) for f in existing_files if "_" in f and f.split("_")[-1].split(".")[0].isdigit()]
-                next_suffix = max(suffixes, default=0) + 1
-                csv_file_name = os.path.join(folder_name, f"{base}_{next_suffix}.csv")
-                # Create new file with device name as first line and header
-                with open(csv_file_name, 'w', newline='') as csv_file:
-                    csv_file.write(device_name + "\n")  # First line: device name
-                    writer = csv.DictWriter(csv_file, fieldnames=['note', 'tag', 'type'])
-                    writer.writeheader()
-                break
-            else:
-                csv_file_name = os.path.join(folder_name, existing_files[choice])
-                break
+            selection = int(input("Select a MIDI device by number: "))
+            device_name = input_names[selection]
+            return device_name
         except (ValueError, IndexError):
             print("Invalid selection. Try again.")
-else:
-    # No existing files, create first
+
+
+def list_existing_files(folder_name):
+    if not os.path.isdir(folder_name):
+        return []
+    return [f for f in os.listdir(folder_name) if f.endswith(".json")]
+
+
+def create_new_file(device_name, folder_name, existing_files):
     base = device_name.replace(" ", "_")
-    csv_file_name = os.path.join(folder_name, f"{base}_1.csv")
-    with open(csv_file_name, 'w', newline='') as csv_file:
-        csv_file.write(device_name + "\n")  # First line: device name
-        writer = csv.DictWriter(csv_file, fieldnames=['note', 'tag', 'type'])
-        writer.writeheader()
+    suffixes = [
+        int(f.split("_")[-1].split(".")[0])
+        for f in existing_files
+        if "_" in f and f.split("_")[-1].split(".")[0].isdigit()
+    ]
+    next_suffix = max(suffixes, default=0) + 1
+    json_file_name = os.path.join(folder_name, f"{base}_{next_suffix}.json")
+    data = {
+        "schema_version": 1,
+        "device_name": device_name,
+        "buttons": {},
+    }
+    with open(json_file_name, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    return json_file_name
 
-print(f"Using file: {csv_file_name}")
 
-# ------------------------ Load Existing Entries ------------------------
-entries = {}
-if os.path.exists(csv_file_name):
-    with open(csv_file_name, 'r', newline='') as f:
-        lines = f.readlines()
-        # Skip first line (device name) and header
-        for row in lines[2:]:
-            row = row.strip()
-            if not row:
+def choose_or_create_file_cli(device_name, folder_name):
+    os.makedirs(folder_name, exist_ok=True)
+    existing_files = list_existing_files(folder_name)
+
+    if existing_files:
+        print("Existing files:")
+        for i, f in enumerate(existing_files):
+            print(f"{i}: {f}")
+        print(f"{len(existing_files)}: Create a new file")
+
+        while True:
+            try:
+                choice = int(input("Select a file to edit or create new: "))
+                if choice == len(existing_files):
+                    return create_new_file(device_name, folder_name, existing_files)
+                return os.path.join(folder_name, existing_files[choice])
+            except (ValueError, IndexError):
+                print("Invalid selection. Try again.")
+    return create_new_file(device_name, folder_name, existing_files)
+
+
+def load_config(json_file_name):
+    if not os.path.exists(json_file_name):
+        return None, {}
+
+    with open(json_file_name, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    device_name = data.get("device_name")
+    buttons_raw = data.get("buttons", {})
+    buttons = {}
+
+    if isinstance(buttons_raw, list):
+        for item in buttons_raw:
+            try:
+                note = int(item["note"])
+                buttons[note] = {"tag": item["tag"], "type": item["type"]}
+            except Exception:
                 continue
-            note_str, tag, btn_type = row.split(',')
-            note = int(note_str)
-            entries[note] = {'tag': tag, 'type': btn_type}
+    elif isinstance(buttons_raw, dict):
+        for note_str, payload in buttons_raw.items():
+            try:
+                note = int(note_str)
+                buttons[note] = {"tag": payload["tag"], "type": payload["type"]}
+            except Exception:
+                continue
 
-pressed_notes = set()  # Debounce for current session
+    return device_name, buttons
 
-# ------------------------ MIDI Listening ------------------------
-print("Press ESC to finish configuring buttons.")
 
-with mido.open_input(device_name) as inport:
-    while True:
-        # Check for ESC key to finish
-        if keyboard.is_pressed('esc'):
-            print("ESC pressed. Exiting.")
-            break
+def save_config(json_file_name, device_name, buttons):
+    data = {
+        "schema_version": 1,
+        "device_name": device_name,
+        "buttons": {str(note): payload for note, payload in buttons.items()},
+    }
+    with open(json_file_name, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
 
-        for msg in inport.iter_pending():
-            # Only consider Note On messages with velocity 127
-            if msg.type == 'note_on' and msg.velocity == 127:
-                note = msg.note
 
-                # Already configured in file
-                if note in entries:
-                    print(f"Button {note} is already configured with tag '{entries[note]['tag']}' and type '{entries[note]['type']}'")
-                    continue
+def run_config_loop(device_name, json_file_name, buttons):
+    pressed_notes = set()
+    print("Press ESC to finish configuring buttons.")
 
-                # Already pressed in this session
-                if note in pressed_notes:
-                    continue
+    with mido.open_input(device_name) as inport:
+        while True:
+            if keyboard.is_pressed("esc"):
+                print("ESC pressed. Exiting.")
+                break
 
-                tag = input(f"Enter tag for button {note}: ")
+            for msg in inport.iter_pending():
+                if msg.type == "note_on" and msg.velocity == 127:
+                    note = msg.note
 
-                # Select button type
-                while True:
-                    btn_type = input(
-                        f"Select type for button {note} ('Emotes', 'AFK', or 'Operation'): "
-                    ).strip()
-                    if btn_type in ALLOWED_TYPES:
-                        break
-                    else:
+                    if note in buttons:
+                        print(
+                            f"Button {note} is already configured with tag '{buttons[note]['tag']}' "
+                            f"and type '{buttons[note]['type']}'"
+                        )
+                        continue
+
+                    if note in pressed_notes:
+                        continue
+
+                    tag = input(f"Enter tag for button {note}: ")
+
+                    while True:
+                        btn_type = input(
+                            f"Select type for button {note} ('Emotes', 'AFK', or 'Operation'): "
+                        ).strip()
+                        if btn_type in ALLOWED_TYPES:
+                            break
                         print("Invalid type. Please enter 'Emotes', 'AFK', or 'Operation'.")
 
-                # Save to CSV
-                with open(csv_file_name, 'a', newline='') as csv_file:
-                    writer = csv.DictWriter(csv_file, fieldnames=['note', 'tag', 'type'])
-                    writer.writerow({'note': note, 'tag': tag, 'type': btn_type})
+                    buttons[note] = {"tag": tag, "type": btn_type}
+                    save_config(json_file_name, device_name, buttons)
 
-                # Update in-memory dict and pressed notes
-                entries[note] = {'tag': tag, 'type': btn_type}
-                pressed_notes.add(note)
-                print(f"Button {note} saved with tag '{tag}' and type '{btn_type}'")
+                    pressed_notes.add(note)
+                    print(f"Button {note} saved with tag '{tag}' and type '{btn_type}'")
+
+
+def main():
+    preselected = None
+    if len(sys.argv) > 1:
+        preselected = " ".join(sys.argv[1:])
+    device_name = select_device_cli(preselected=preselected)
+
+    folder_name = "midi_configs"
+    json_file_name = choose_or_create_file_cli(device_name, folder_name)
+    print(f"Using file: {json_file_name}")
+
+    device_name, buttons = load_config(json_file_name)
+    if not device_name:
+        device_name = select_device_cli(preselected=preselected)
+        save_config(json_file_name, device_name, buttons)
+
+    run_config_loop(device_name, json_file_name, buttons)
+
+
+if __name__ == "__main__":
+    main()
