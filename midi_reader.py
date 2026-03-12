@@ -1,6 +1,4 @@
-import argparse
 import os
-import socket
 import mido
 import time
 import threading
@@ -8,9 +6,6 @@ import threading
 from midi_config import MidiConfigManager
 
 # ---------------- CONFIG ----------------
-SERVER_HOST = "127.0.0.1"
-SERVER_PORT = 5000
-
 MIDI_CONFIG_FOLDER = "midi_configs"
 
 
@@ -53,10 +48,11 @@ class MidiLedController:
 
 
 class MidiReaderRunner:
-    def __init__(self, host, port, config_path, log_fn=None):
-        self.host = host
-        self.port = port
+    def __init__(self, config_path, message_queue, operation_queue=None, operation_commands=None, log_fn=None):
         self.config_path = config_path
+        self.message_queue = message_queue
+        self.operation_queue = operation_queue
+        self.operation_commands = operation_commands or set()
         self.log_fn = log_fn or (lambda msg: None)
         self._thread = None
         self._stop_event = threading.Event()
@@ -73,14 +69,9 @@ class MidiReaderRunner:
         self._stop_event.set()
 
     def _run(self):
-        client = None
         inport = None
         outport = None
         try:
-            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client.connect((self.host, self.port))
-            self.log_fn(f"Connected to server at {self.host}:{self.port}")
-
             if not self.config_path:
                 self.log_fn("No MIDI config selected.")
                 return
@@ -106,8 +97,11 @@ class MidiReaderRunner:
                         if str(note) in buttons and note not in pressed_notes:
                             tag = buttons[str(note)]["tag"]
                             btn_type = buttons[str(note)]["type"]
-                            message = f"{btn_type},{tag}"
-                            client.sendall(message.encode("utf-8"))
+                            if btn_type == "Operation":
+                                if tag in self.operation_commands and self.operation_queue is not None:
+                                    self.operation_queue.put(tag)
+                            else:
+                                self.message_queue.put((btn_type, tag))
                             pressed_notes.add(note)
                     elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
                         note = msg.note
@@ -126,11 +120,6 @@ class MidiReaderRunner:
             try:
                 if outport:
                     outport.close()
-            except Exception:
-                pass
-            try:
-                if client:
-                    client.close()
             except Exception:
                 pass
 
@@ -223,17 +212,7 @@ def turn_off_all_leds(outport):
 
 # ---------------- MAIN ----------------
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default=SERVER_HOST)
-    parser.add_argument("--port", type=int, default=SERVER_PORT)
-    parser.add_argument("--config", default="")
-    args = parser.parse_args()
-
-    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client.connect((args.host, args.port))
-    print(f"Connected to server at {args.host}:{args.port}")
-
-    json_file = args.config or select_midi_config()
+    json_file = select_midi_config()
     if not json_file:
         print("No MIDI config selected. Exiting.")
         return
@@ -262,12 +241,7 @@ def main():
                     if str(note) in buttons and note not in pressed_notes:
                         tag = buttons[str(note)]["tag"]
                         btn_type = buttons[str(note)]["type"]
-
                         print(f"Button pressed: Tag='{tag}', Type='{btn_type}'")
-
-                        message = f"{btn_type},{tag}"
-                        client.sendall(message.encode("utf-8"))
-
                         pressed_notes.add(note)
                 elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
                     note = msg.note
@@ -278,7 +252,6 @@ def main():
 
     except KeyboardInterrupt:
         print("Exiting...")
-        client.close()
         outport.close()
         inport.close()
 

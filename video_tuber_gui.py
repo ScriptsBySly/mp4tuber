@@ -82,8 +82,6 @@ class VideoTuberGUI(tk.Tk):
         self._add_entry(config_box, "Noise Dur", "noise_dur", str(vt.NOISE_DURATION))
         self._add_entry(config_box, "Silence Thresh", "silence_thresh", str(vt.AUDIO_THRESHOLD_SILENCE))
         self._add_entry(config_box, "Silence Dur", "silence_dur", str(vt.SILENCE_DURATION))
-        self._add_entry(config_box, "Host", "host", vt.HOST)
-        self._add_entry(config_box, "Port", "port", str(vt.PORT))
 
         flags_box = ttk.LabelFrame(left, text="Filters", padding=8)
         flags_box.pack(fill=tk.X, pady=(12, 0))
@@ -133,16 +131,6 @@ class VideoTuberGUI(tk.Tk):
 
         reader_row = ttk.Frame(parent)
         reader_row.pack(fill=tk.X, pady=(6, 4))
-        ttk.Label(reader_row, text="Host").pack(side=tk.LEFT)
-        self.reader_host_entry = ttk.Entry(reader_row, width=18)
-        self.reader_host_entry.insert(0, midi_reader.SERVER_HOST)
-        self.reader_host_entry.pack(side=tk.LEFT, padx=(6, 12))
-
-        ttk.Label(reader_row, text="Port").pack(side=tk.LEFT)
-        self.reader_port_entry = ttk.Entry(reader_row, width=8)
-        self.reader_port_entry.insert(0, str(midi_reader.SERVER_PORT))
-        self.reader_port_entry.pack(side=tk.LEFT, padx=(6, 12))
-
         self.reader_launch_btn = ttk.Button(
             reader_row, text="Launch MIDI Reader", command=self.launch_midi_reader
         )
@@ -270,9 +258,6 @@ class VideoTuberGUI(tk.Tk):
             vt.NOISE_DURATION = float(self.entries["noise_dur"].get())
             vt.AUDIO_THRESHOLD_SILENCE = float(self.entries["silence_thresh"].get())
             vt.SILENCE_DURATION = float(self.entries["silence_dur"].get())
-            vt.HOST = self.entries["host"].get().strip() or vt.HOST
-            vt.PORT = int(self.entries["port"].get())
-
             vt.GLITCH_ENABLE = bool(self.glitch_var.get())
             vt.ENABLE_VHS = bool(self.vhs_var.get())
             vt.SCANLINE_ENABLE = bool(self.scanline_var.get())
@@ -394,14 +379,6 @@ class VideoTuberGUI(tk.Tk):
             self._log("MIDI reader stopped")
             return
 
-        host = self.reader_host_entry.get().strip() or midi_reader.SERVER_HOST
-        port_raw = self.reader_port_entry.get().strip() or str(midi_reader.SERVER_PORT)
-        try:
-            port = int(port_raw)
-        except Exception:
-            self._log("Invalid MIDI reader port")
-            return
-
         selected = self.midi_config_var.get().strip()
         if not selected:
             self._log("Select a MIDI config from the dropdown first")
@@ -413,9 +390,10 @@ class VideoTuberGUI(tk.Tk):
             return
 
         self._midi_reader_runner = midi_reader.MidiReaderRunner(
-            host=host,
-            port=port,
             config_path=config_path,
+            message_queue=vt.video_requests,
+            operation_queue=vt.operation_requests,
+            operation_commands=vt.OPERATION_COMMANDS,
             log_fn=self._log,
         )
         started = self._midi_reader_runner.start()

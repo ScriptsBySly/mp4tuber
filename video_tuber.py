@@ -3,7 +3,6 @@ import time
 import random
 # module needed for creating queues to store incoming data
 import queue
-import socket
 import threading
 
 # module for detection of microphone input
@@ -30,10 +29,6 @@ NOISE_DURATION = 0.0
 ######### Options when detecting silence
 AUDIO_THRESHOLD_SILENCE = 0.2
 SILENCE_DURATION = 1.0
-
-###### MIDI
-HOST = '0.0.0.0'  # Listen on all network interfaces
-PORT = 5000       # Port to listen on
 
 ### FRAMES
 VIDEO_END_CUTOFF = 20  # Number of frames before the actual end to consider the video finished
@@ -453,74 +448,9 @@ def inactivity_callback():
     return FRAME_ENDED
 
 ### MIDI
-###### Socket callback
-def handle_client(client_socket, address, stop_event):
-    safe_print(f"New connection from {address}")
-    client_socket.settimeout(1.0)
-
-    with client_socket:
-        while not stop_event.is_set():
-            try:
-                data = client_socket.recv(1024)
-                if not data:
-                    break
-
-                message = data.decode('utf-8').strip()
-                safe_print(f"[{address}] Received raw: {message}")
-
-                parts = message.split(",", 1)
-                if len(parts) != 2:
-                    safe_print(f"[{address}] Invalid message format: {message}")
-                    continue
-
-                command_type = parts[0].strip()
-                command_data = parts[1].strip()
-
-                if not command_type:
-                    safe_print(f"[{address}] Empty command_type in message: {message}")
-                    continue
-                if not command_data:
-                    safe_print(f"[{address}] Empty command_data in message: {message}")
-                    continue
-
-                if command_type.lower() == "operation":
-                    if command_data in OPERATION_COMMANDS:
-                        if command_data == "Reset":
-                            operation_requests.put(command_data)
-                    else:
-                        safe_print(f"[{address}] Unknown Operation command: {command_data}")
-                    continue
-
-                video_requests.put((command_type, command_data))
-
-            except socket.timeout:
-                continue
-            except:
-                break
-
-    safe_print(f"Connection closed: {address}")
-
-###### MIDI Server Thread
-def midi_server_thread(server, stop_event):
-    server.settimeout(1.0)
-    while not stop_event.is_set():
-        try:
-            client_socket, address = server.accept()
-            thread = threading.Thread(target=handle_client, args=(client_socket, address, stop_event))
-            thread.start()
-        except socket.timeout:
-            continue
-
 ###### INIT
-def midi_init(stop_event):
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind((HOST, PORT))
-    server.listen()
-    safe_print(f"MIDI Server listening on {HOST}:{PORT}")
-
-    thread = threading.Thread(target=midi_server_thread, args=(server, stop_event))
-    thread.start()
-    return server, thread
+def midi_init():
+    pass
 
 ###### CALLBACK
 def midi_callback(command_type):
@@ -556,8 +486,6 @@ class VideoTuberEngine:
     def __init__(self):
         self.stop_event = threading.Event()
         self.streams = []
-        self.server = None
-        self.server_thread = None
         self.sm = None
         self.running = False
 
@@ -569,14 +497,10 @@ class VideoTuberEngine:
 
         self.stop_event.clear()
         self.streams = []
-        self.server = None
-        self.server_thread = None
 
         for rule_name, init_fn, callback_fn in RULES:
             if rule_name == "MIC":
                 self.streams.append(init_fn())
-            elif rule_name == "MIDI":
-                self.server, self.server_thread = init_fn(self.stop_event)
             else:
                 init_fn()
 
@@ -613,12 +537,6 @@ class VideoTuberEngine:
             return
 
         self.stop_event.set()
-
-        if self.server is not None:
-            try:
-                self.server.close()
-            except Exception:
-                pass
 
         for s in self.streams:
             try:
