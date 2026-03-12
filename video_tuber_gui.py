@@ -135,6 +135,11 @@ class VideoTuberGUI(tk.Tk):
             reader_row, text="Launch MIDI Reader", command=self.launch_midi_reader
         )
         self.reader_launch_btn.pack(side=tk.LEFT)
+        ttk.Button(reader_row, text="Reload Config", command=self.reload_midi_reader_config).pack(
+            side=tk.LEFT, padx=(6, 0)
+        )
+        self.reader_status_label = tk.Label(reader_row, text="Reader Off", fg="red")
+        self.reader_status_label.pack(side=tk.LEFT, padx=(12, 0))
 
         ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=8)
 
@@ -376,6 +381,7 @@ class VideoTuberGUI(tk.Tk):
                 self._midi_reader_runner.stop()
             self._midi_reader_running = False
             self._set_midi_reader_button_text()
+            self._set_midi_reader_status(False)
             self._log("MIDI reader stopped")
             return
 
@@ -400,9 +406,28 @@ class VideoTuberGUI(tk.Tk):
         if started:
             self._midi_reader_running = True
             self._set_midi_reader_button_text()
+            self._set_midi_reader_status(True)
             self._log("MIDI reader started")
         else:
             self._log("MIDI reader already running")
+
+    def reload_midi_reader_config(self):
+        if not self._midi_reader_running or not self._midi_reader_runner:
+            self._log("MIDI reader is not running")
+            return
+
+        selected = self.midi_config_var.get().strip()
+        if not selected:
+            self._log("Select a MIDI config from the dropdown first")
+            return
+
+        config_path = os.path.join(os.getcwd(), "midi_configs", selected)
+        if not os.path.exists(config_path):
+            self._log("Selected MIDI config file not found")
+            return
+
+        self._midi_reader_runner.reload_config(config_path)
+        self._log("MIDI reader config reloaded")
 
     def add_midi_button(self):
         if self._midi_waiting:
@@ -796,6 +821,12 @@ class VideoTuberGUI(tk.Tk):
             self.reader_launch_btn.configure(text="Stop MIDI Reader")
         else:
             self.reader_launch_btn.configure(text="Launch MIDI Reader")
+
+    def _set_midi_reader_status(self, running):
+        if running:
+            self.reader_status_label.configure(text="Reader Running", fg="green")
+        else:
+            self.reader_status_label.configure(text="Reader Off", fg="red")
 
     def _set_save_status(self, saved):
         if saved is None:

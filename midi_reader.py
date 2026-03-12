@@ -56,6 +56,8 @@ class MidiReaderRunner:
         self.log_fn = log_fn or (lambda msg: None)
         self._thread = None
         self._stop_event = threading.Event()
+        self._reload_event = threading.Event()
+        self._reload_path = None
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -68,29 +70,56 @@ class MidiReaderRunner:
     def stop(self):
         self._stop_event.set()
 
+    def reload_config(self, config_path):
+        self._reload_path = config_path
+        self._reload_event.set()
+
     def _run(self):
         inport = None
         outport = None
         try:
-            if not self.config_path:
-                self.log_fn("No MIDI config selected.")
-                return
-
-            device_name_csv, buttons = load_midi_config(self.config_path)
-            if not device_name_csv:
-                self.log_fn("No device specified in JSON.")
-                return
-
-            inport, outport = open_midi_device(device_name_csv)
-            if not inport:
-                self.log_fn("MIDI device not available.")
-                return
-
-            turn_off_all_leds(outport)
-            turn_on_leds(outport, buttons)
-
-            pressed_notes = set()
             while not self._stop_event.is_set():
+                if self._reload_event.is_set():
+                    self._reload_event.clear()
+                    if inport:
+                        try:
+                            inport.close()
+                        except Exception:
+                            pass
+                        inport = None
+                    if outport:
+                        try:
+                            outport.close()
+                        except Exception:
+                            pass
+                        outport = None
+
+                    if self._reload_path:
+                        self.config_path = self._reload_path
+                        self._reload_path = None
+
+                if not inport or not outport:
+                    if not self.config_path:
+                        self.log_fn("No MIDI config selected.")
+                        time.sleep(0.1)
+                        continue
+
+                    device_name_csv, buttons = load_midi_config(self.config_path)
+                    if not device_name_csv:
+                        self.log_fn("No device specified in JSON.")
+                        time.sleep(0.1)
+                        continue
+
+                    inport, outport = open_midi_device(device_name_csv)
+                    if not inport:
+                        self.log_fn("MIDI device not available.")
+                        time.sleep(0.1)
+                        continue
+
+                    turn_off_all_leds(outport)
+                    turn_on_leds(outport, buttons)
+                    pressed_notes = set()
+
                 for msg in inport.iter_pending():
                     if msg.type == "note_on" and msg.velocity > 0:
                         note = msg.note
