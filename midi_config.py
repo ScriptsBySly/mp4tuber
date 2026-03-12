@@ -4,7 +4,7 @@ import json
 import mido
 import keyboard
 
-ALLOWED_TYPES = ["Emotes", "AFK", "Operation"]
+ALLOWED_TYPES = ["Emotes", "Loop", "Operation"]
 LAUNCHPAD_S_COLOR_VALUES = [12, 13, 14, 15, 28, 29, 30, 31, 44, 45, 46, 47, 60, 61, 62, 63]
 DEFAULT_COLOR = 63
 
@@ -190,11 +190,11 @@ def run_config_loop(device_name, json_file_name, data):
 
                     while True:
                         btn_type = input(
-                            f"Select type for button {note} ('Emotes', 'AFK', or 'Operation'): "
+                            f"Select type for button {note} ('Emotes', 'Loop', or 'Operation'): "
                         ).strip()
                         if btn_type in ALLOWED_TYPES:
                             break
-                        print("Invalid type. Please enter 'Emotes', 'AFK', or 'Operation'.")
+                        print("Invalid type. Please enter 'Emotes', 'Loop', or 'Operation'.")
 
                     MidiConfigManager.add_button(
                         data,

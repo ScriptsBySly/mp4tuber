@@ -104,22 +104,22 @@ STATES = {
         video_random=True,
         transitions=[("Talking", "MIC", (AUDIO_THRESHOLD_NOISE, NOISE_DURATION, "POSITIVE")),
                      ("Emotes", "MIDI", ("Emotes",)),
-                     ("AFK", "MIDI", ("AFK",))]
+                     ("Loop", "MIDI", ("Loop",))]
     ),
     "Talking": StateStruct(
         name="Talking",
         video_random=True,
         transitions=[("Idle", "MIC", (AUDIO_THRESHOLD_SILENCE, SILENCE_DURATION, "NEGATIVE")),
                      ("Emotes", "MIDI", ("Emotes",)),
-                     ("AFK", "MIDI", ("AFK",))]
+                     ("Loop", "MIDI", ("Loop",))]
     ),
     "Emotes": StateStruct(
         name="Emotes",
         video_random=False,
         transitions=[("Idle", "Inactivity", (None))]
     ),
-    "AFK": StateStruct(
-        name="Emotes",
+    "Loop": StateStruct(
+        name="Loop",
         video_random=True,
         transitions=[("Idle", "MIDI", ("None",))]
     ),
