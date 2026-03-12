@@ -3,6 +3,8 @@ import shutil
 import subprocess
 import json
 import threading
+import time
+from collections import deque
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
@@ -19,7 +21,8 @@ class VideoTuberGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Video Tuber GUI")
-        self.geometry("820x540")
+        self.geometry("820x830")
+        self.resizable(False, False)
 
         self._engine_thread = None
         self._engine = vt.VideoTuberEngine()
@@ -28,6 +31,12 @@ class VideoTuberGUI(tk.Tk):
         self._midi_led = midi_reader.MidiLedController()
         self._midi_reader_runner = None
         self._midi_reader_running = False
+        self._mic_level = 0.0
+        self._mic_level_decay = 0.9
+        self._mic_test_enabled = False
+        self._mic_avg = 0.0
+        self._mic_avg_window = 0.5
+        self._mic_samples = deque()
 
         self._build_ui()
         self._ui_tick()
@@ -76,6 +85,13 @@ class VideoTuberGUI(tk.Tk):
         ttk.Label(state_row, text="State:").pack(side=tk.LEFT)
         ttk.Label(state_row, textvariable=self.state_var).pack(side=tk.LEFT, padx=(6, 0))
 
+        midi_state_row = ttk.Frame(left)
+        midi_state_row.pack(fill=tk.X, pady=(0, 12))
+        ttk.Label(midi_state_row, text="MIDI state:").pack(side=tk.LEFT)
+        self.midi_state_label = tk.Label(midi_state_row, text="Reader Off", fg="red")
+        self.midi_state_label.pack(side=tk.LEFT, padx=(6, 0))
+        self._sync_midi_status_labels(False)
+
         btn_row = ttk.Frame(left)
         btn_row.pack(fill=tk.X, pady=(0, 12))
         ttk.Button(btn_row, text="Start", command=self.start_engine).pack(side=tk.LEFT)
@@ -114,6 +130,28 @@ class VideoTuberGUI(tk.Tk):
         self._add_entry(mic_box, "Noise Dur", "noise_dur", str(vt.NOISE_DURATION))
         self._add_entry(mic_box, "Silence Thresh", "silence_thresh", str(vt.AUDIO_THRESHOLD_SILENCE))
         self._add_entry(mic_box, "Silence Dur", "silence_dur", str(vt.SILENCE_DURATION))
+
+        mic_test_row = ttk.Frame(mic_box)
+        mic_test_row.pack(fill=tk.X, pady=(6, 0))
+        self.mic_test_btn = ttk.Button(
+            mic_test_row, text="Enable microphone test", command=self.toggle_mic_test
+        )
+        self.mic_test_btn.pack(side=tk.LEFT)
+
+        mic_level_row = ttk.Frame(mic_box)
+        mic_level_row.pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(mic_level_row, text="Mic Level", width=14).pack(side=tk.LEFT)
+        self.mic_level_bar = ttk.Progressbar(
+            mic_level_row, orient=tk.HORIZONTAL, length=200, mode="determinate", maximum=1.0
+        )
+        self.mic_level_bar.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        mic_avg_row = ttk.Frame(mic_box)
+        mic_avg_row.pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(mic_avg_row, text="Average volume", width=14).pack(side=tk.LEFT)
+        self.mic_avg_var = tk.StringVar(value="0.00")
+        self.mic_avg_entry = ttk.Entry(mic_avg_row, textvariable=self.mic_avg_var, state="disabled", width=8)
+        self.mic_avg_entry.pack(side=tk.LEFT)
 
         flags_box = ttk.LabelFrame(left, text="Filters", padding=8)
         flags_box.pack(fill=tk.X, pady=(12, 0))
@@ -269,6 +307,7 @@ class VideoTuberGUI(tk.Tk):
     def _ui_tick(self):
         self._drain_logs()
         self._update_state_label()
+        self._update_mic_level()
         self.after(100, self._ui_tick)
 
     def _drain_logs(self):
@@ -285,6 +324,52 @@ class VideoTuberGUI(tk.Tk):
             self.state_var.set(self._engine.sm.current_state.name)
         else:
             self.state_var.set("-")
+
+    def _update_mic_level(self):
+        if not self._mic_test_enabled:
+            self.mic_level_bar["value"] = 0.0
+            self.mic_avg_var.set("0.00")
+            self._mic_samples.clear()
+            return
+        # Drain audio queue and update a simple peak-hold meter with decay.
+        try:
+            while True:
+                item = vt.audio_queue.get_nowait()
+                if isinstance(item, tuple):
+                    ts, vol = item
+                else:
+                    ts, vol = (time.time(), item)
+                if vol > self._mic_level:
+                    self._mic_level = vol
+                self._mic_samples.append((ts, vol))
+        except Exception:
+            pass
+
+        # Apply decay so the bar falls smoothly.
+        self._mic_level *= self._mic_level_decay
+
+        # Normalize roughly into 0..1 range
+        level = min(max(self._mic_level, 0.0), 1.0)
+        self.mic_level_bar["value"] = level
+        now = time.time()
+        cutoff = now - self._mic_avg_window
+        while self._mic_samples and self._mic_samples[0][0] < cutoff:
+            self._mic_samples.popleft()
+        if self._mic_samples:
+            self._mic_avg = sum(v for _, v in self._mic_samples) / len(self._mic_samples)
+        else:
+            self._mic_avg = 0.0
+        self.mic_avg_var.set(f"{self._mic_avg:.2f}")
+
+    def toggle_mic_test(self):
+        self._mic_test_enabled = not self._mic_test_enabled
+        if self._mic_test_enabled:
+            self.mic_test_btn.configure(text="Disable microphone test")
+        else:
+            self.mic_test_btn.configure(text="Enable microphone test")
+            self._mic_level = 0.0
+            self._mic_avg = 0.0
+            self._mic_samples.clear()
 
     def apply_config(self):
         try:
@@ -893,10 +978,19 @@ class VideoTuberGUI(tk.Tk):
             self.reader_launch_btn.configure(text="Launch MIDI Reader")
 
     def _set_midi_reader_status(self, running):
+        self._sync_midi_status_labels(running)
+
+    def _sync_midi_status_labels(self, running):
         if running:
-            self.reader_status_label.configure(text="Reader Running", fg="green")
+            if hasattr(self, "reader_status_label"):
+                self.reader_status_label.configure(text="Reader Running", fg="green")
+            if hasattr(self, "midi_state_label"):
+                self.midi_state_label.configure(text="Reader Running", fg="green")
         else:
-            self.reader_status_label.configure(text="Reader Off", fg="red")
+            if hasattr(self, "reader_status_label"):
+                self.reader_status_label.configure(text="Reader Off", fg="red")
+            if hasattr(self, "midi_state_label"):
+                self.midi_state_label.configure(text="Reader Off", fg="red")
 
     def _set_save_status(self, saved):
         if saved is None:
@@ -1126,7 +1220,7 @@ class VideoTuberGUI(tk.Tk):
         if not self._engine_thread:
             return
 
-        self._engine.stop()
+        self._engine.request_stop()
         self._engine_thread.join(timeout=3.0)
         self.status_var.set("Stopped")
         self._log("Engine stopped")

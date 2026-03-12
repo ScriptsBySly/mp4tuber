@@ -398,7 +398,7 @@ LAST_NOISE_TIME = 0.0
 # This function is needed to update the detected volume level by Input Stream
 def audio_callback(indata, frames, time_info, status):
     volume = np.linalg.norm(indata)
-    audio_queue.put(volume)
+    audio_queue.put((time.time(), volume))
 
 ###### INIT
 def mic_init():
@@ -413,7 +413,11 @@ def mic_callback(threshold, duration, threshold_type):
 
     try:
         while True:
-            vol = audio_queue.get_nowait()
+            item = audio_queue.get_nowait()
+            if isinstance(item, tuple):
+                vol = item[1]
+            else:
+                vol = item
 
             if threshold_type == "POSITIVE":
                 threshold_passed = vol >= threshold
@@ -528,15 +532,16 @@ class VideoTuberEngine:
                 if cv2.waitKey(30) & 0xFF == 27:
                     break
         finally:
-            self.stop()
+            self._cleanup()
             safe_print("Application exited cleanly.")
             process_logs()
 
-    def stop(self):
+    def request_stop(self):
+        self.stop_event.set()
+
+    def _cleanup(self):
         if not self.running:
             return
-
-        self.stop_event.set()
 
         for s in self.streams:
             try:
