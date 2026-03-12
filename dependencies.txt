@@ -1,0 +1,9 @@
+# Core runtime dependencies
+numpy
+opencv-python
+sounddevice
+mido
+keyboard
+
+# GUI
+# tkinter is part of the standard library on Windows; install separately on Linux if needed
