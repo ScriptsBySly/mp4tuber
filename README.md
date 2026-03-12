@@ -17,7 +17,7 @@ I recommend the talking videos to be kept short so when the character in the vid
 
 ## Launch the program:
 
-python.exe video_tuber.py
+python.exe video_tuber_gui.py
 
 ## Saving and Loading settings
 You can save the program settings on the drop down menu at the top left. Save/Load will create a file where you run the application. If you wish to backup your settings to a specific directory, use the backup options.
@@ -25,6 +25,8 @@ You can save the program settings on the drop down menu at the top left. Save/Lo
 ## Video player
 
 ### Start the video player
+(Configure the microphone input first. See Microphone section a few sections below).
+
 Press the "Start" button on the "Video" tab. You can stop the player by pressing "Stop" or press ESC on your keyboard with the video player window selected. 
 
 ### Available settings
