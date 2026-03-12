@@ -5,7 +5,117 @@ import mido
 import keyboard
 
 ALLOWED_TYPES = ["Emotes", "AFK", "Operation"]
+LAUNCHPAD_S_COLOR_VALUES = [12, 13, 14, 15, 28, 29, 30, 31, 44, 45, 46, 47, 60, 61, 62, 63]
+DEFAULT_COLOR = 63
 
+
+class MidiConfigManager:
+    @staticmethod
+    def new_config(device_name=""):
+        return {
+            "schema_version": 1,
+            "device_name": device_name,
+            "buttons": {},
+        }
+
+    @staticmethod
+    def load(path):
+        if not os.path.exists(path):
+            return MidiConfigManager.new_config()
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            data = MidiConfigManager.new_config()
+        if "schema_version" not in data:
+            data["schema_version"] = 1
+        if "device_name" not in data:
+            data["device_name"] = ""
+        if "buttons" not in data:
+            data["buttons"] = {}
+        if isinstance(data.get("buttons"), list):
+            buttons = {}
+            for item in data["buttons"]:
+                try:
+                    note = int(item.get("note"))
+                    buttons[str(note)] = {
+                        "tag": item.get("tag", ""),
+                        "type": item.get("type", ""),
+                        "color": MidiConfigManager.normalize_color_value(item.get("color", DEFAULT_COLOR)),
+                    }
+                except Exception:
+                    continue
+            data["buttons"] = buttons
+        return data
+
+    @staticmethod
+    def save(path, data):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+    @staticmethod
+    def list_existing_files(folder_name):
+        if not os.path.isdir(folder_name):
+            return []
+        return [f for f in os.listdir(folder_name) if f.endswith(".json")]
+
+    @staticmethod
+    def create_new_file(device_name, folder_name, existing_files):
+        base = device_name.replace(" ", "_") if device_name else "midi"
+        suffixes = [
+            int(f.split("_")[-1].split(".")[0])
+            for f in existing_files
+            if "_" in f and f.split("_")[-1].split(".")[0].isdigit()
+        ]
+        next_suffix = max(suffixes, default=0) + 1
+        json_file_name = os.path.join(folder_name, f"{base}_{next_suffix}.json")
+        data = MidiConfigManager.new_config(device_name)
+        MidiConfigManager.save(json_file_name, data)
+        return json_file_name
+
+    @staticmethod
+    def add_button(data, note, tag="", btn_type="", color=DEFAULT_COLOR):
+        buttons = data.get("buttons", {})
+        buttons[str(note)] = {
+            "tag": tag,
+            "type": btn_type,
+            "color": MidiConfigManager.normalize_color_value(color),
+        }
+        data["buttons"] = buttons
+        return data
+
+    @staticmethod
+    def normalize_color_value(color):
+        try:
+            color = int(color)
+        except Exception:
+            return LAUNCHPAD_S_COLOR_VALUES[0]
+        if color in LAUNCHPAD_S_COLOR_VALUES:
+            return color
+        closest = min(LAUNCHPAD_S_COLOR_VALUES, key=lambda v: abs(v - color))
+        return closest
+
+    @staticmethod
+    def velocity_to_color_index(color):
+        try:
+            color = int(color)
+        except Exception:
+            return 0
+        if color in LAUNCHPAD_S_COLOR_VALUES:
+            return LAUNCHPAD_S_COLOR_VALUES.index(color)
+        closest = min(LAUNCHPAD_S_COLOR_VALUES, key=lambda v: abs(v - color))
+        return LAUNCHPAD_S_COLOR_VALUES.index(closest)
+
+    @staticmethod
+    def color_index_to_velocity(color_index):
+        try:
+            color_index = int(color_index)
+        except Exception:
+            color_index = 0
+        color_index = max(0, min(len(LAUNCHPAD_S_COLOR_VALUES) - 1, color_index))
+        return LAUNCHPAD_S_COLOR_VALUES[color_index]
+
+
+# ---- CLI ----
 
 def list_input_devices():
     return mido.get_input_names()
@@ -30,34 +140,9 @@ def select_device_cli(preselected=None):
             print("Invalid selection. Try again.")
 
 
-def list_existing_files(folder_name):
-    if not os.path.isdir(folder_name):
-        return []
-    return [f for f in os.listdir(folder_name) if f.endswith(".json")]
-
-
-def create_new_file(device_name, folder_name, existing_files):
-    base = device_name.replace(" ", "_")
-    suffixes = [
-        int(f.split("_")[-1].split(".")[0])
-        for f in existing_files
-        if "_" in f and f.split("_")[-1].split(".")[0].isdigit()
-    ]
-    next_suffix = max(suffixes, default=0) + 1
-    json_file_name = os.path.join(folder_name, f"{base}_{next_suffix}.json")
-    data = {
-        "schema_version": 1,
-        "device_name": device_name,
-        "buttons": {},
-    }
-    with open(json_file_name, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-    return json_file_name
-
-
 def choose_or_create_file_cli(device_name, folder_name):
     os.makedirs(folder_name, exist_ok=True)
-    existing_files = list_existing_files(folder_name)
+    existing_files = MidiConfigManager.list_existing_files(folder_name)
 
     if existing_files:
         print("Existing files:")
@@ -69,53 +154,14 @@ def choose_or_create_file_cli(device_name, folder_name):
             try:
                 choice = int(input("Select a file to edit or create new: "))
                 if choice == len(existing_files):
-                    return create_new_file(device_name, folder_name, existing_files)
+                    return MidiConfigManager.create_new_file(device_name, folder_name, existing_files)
                 return os.path.join(folder_name, existing_files[choice])
             except (ValueError, IndexError):
                 print("Invalid selection. Try again.")
-    return create_new_file(device_name, folder_name, existing_files)
+    return MidiConfigManager.create_new_file(device_name, folder_name, existing_files)
 
 
-def load_config(json_file_name):
-    if not os.path.exists(json_file_name):
-        return None, {}
-
-    with open(json_file_name, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    device_name = data.get("device_name")
-    buttons_raw = data.get("buttons", {})
-    buttons = {}
-
-    if isinstance(buttons_raw, list):
-        for item in buttons_raw:
-            try:
-                note = int(item["note"])
-                buttons[note] = {"tag": item["tag"], "type": item["type"]}
-            except Exception:
-                continue
-    elif isinstance(buttons_raw, dict):
-        for note_str, payload in buttons_raw.items():
-            try:
-                note = int(note_str)
-                buttons[note] = {"tag": payload["tag"], "type": payload["type"]}
-            except Exception:
-                continue
-
-    return device_name, buttons
-
-
-def save_config(json_file_name, device_name, buttons):
-    data = {
-        "schema_version": 1,
-        "device_name": device_name,
-        "buttons": {str(note): payload for note, payload in buttons.items()},
-    }
-    with open(json_file_name, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-
-
-def run_config_loop(device_name, json_file_name, buttons):
+def run_config_loop(device_name, json_file_name, data):
     pressed_notes = set()
     print("Press ESC to finish configuring buttons.")
 
@@ -129,10 +175,11 @@ def run_config_loop(device_name, json_file_name, buttons):
                 if msg.type == "note_on" and msg.velocity == 127:
                     note = msg.note
 
-                    if note in buttons:
+                    if str(note) in data.get("buttons", {}):
+                        existing = data["buttons"][str(note)]
                         print(
-                            f"Button {note} is already configured with tag '{buttons[note]['tag']}' "
-                            f"and type '{buttons[note]['type']}'"
+                            f"Button {note} is already configured with tag '{existing.get('tag','')}' "
+                            f"and type '{existing.get('type','')}'"
                         )
                         continue
 
@@ -149,8 +196,14 @@ def run_config_loop(device_name, json_file_name, buttons):
                             break
                         print("Invalid type. Please enter 'Emotes', 'AFK', or 'Operation'.")
 
-                    buttons[note] = {"tag": tag, "type": btn_type}
-                    save_config(json_file_name, device_name, buttons)
+                    MidiConfigManager.add_button(
+                        data,
+                        note,
+                        tag=tag,
+                        btn_type=btn_type,
+                        color=DEFAULT_COLOR,
+                    )
+                    MidiConfigManager.save(json_file_name, data)
 
                     pressed_notes.add(note)
                     print(f"Button {note} saved with tag '{tag}' and type '{btn_type}'")
@@ -166,12 +219,12 @@ def main():
     json_file_name = choose_or_create_file_cli(device_name, folder_name)
     print(f"Using file: {json_file_name}")
 
-    device_name, buttons = load_config(json_file_name)
-    if not device_name:
-        device_name = select_device_cli(preselected=preselected)
-        save_config(json_file_name, device_name, buttons)
+    data = MidiConfigManager.load(json_file_name)
+    if not data.get("device_name"):
+        data["device_name"] = device_name
+        MidiConfigManager.save(json_file_name, data)
 
-    run_config_loop(device_name, json_file_name, buttons)
+    run_config_loop(device_name, json_file_name, data)
 
 
 if __name__ == "__main__":

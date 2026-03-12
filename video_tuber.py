@@ -552,52 +552,94 @@ RULES = [
 ]
 
 # ---------------- MAIN ----------------
-if __name__ == "__main__":
-    auto_load_videos_into_states(STATES)
+class VideoTuberEngine:
+    def __init__(self):
+        self.stop_event = threading.Event()
+        self.streams = []
+        self.server = None
+        self.server_thread = None
+        self.sm = None
+        self.running = False
 
-    stop_event = threading.Event()
-    streams = []
+    def start(self):
+        if self.running:
+            return
 
-    # Initialize all rules
-    for rule_name, init_fn, callback_fn in RULES:
-        if rule_name == "MIC":
-            streams.append(init_fn())
-        elif rule_name == "MIDI":
-            server, server_thread = init_fn(stop_event)
-        else:
-            init_fn()
+        auto_load_videos_into_states(STATES)
 
-    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(WINDOW_NAME, SCREEN_WIDTH, SCREEN_HEIGHT)
+        self.stop_event.clear()
+        self.streams = []
+        self.server = None
+        self.server_thread = None
 
-    sm = StateMachine(STATES)
+        for rule_name, init_fn, callback_fn in RULES:
+            if rule_name == "MIC":
+                self.streams.append(init_fn())
+            elif rule_name == "MIDI":
+                self.server, self.server_thread = init_fn(self.stop_event)
+            else:
+                init_fn()
 
-    try:
-        while True:
+        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(WINDOW_NAME, SCREEN_WIDTH, SCREEN_HEIGHT)
+
+        self.sm = StateMachine(STATES)
+        self.running = True
+
+    def run(self):
+        if not self.running:
+            self.start()
+
+        try:
+            while not self.stop_event.is_set():
+                process_logs()
+
+                self.sm.update()
+
+                frame = self.sm.get_frame()
+                if frame is not None:
+                    frame = self.sm.apply_filters(frame)
+                    cv2.imshow(WINDOW_NAME, frame)
+
+                if cv2.waitKey(30) & 0xFF == 27:
+                    break
+        finally:
+            self.stop()
+            safe_print("Application exited cleanly.")
             process_logs()
 
-            # Update state machine
-            sm.update()
+    def stop(self):
+        if not self.running:
+            return
 
-            # Get frame
-            frame = sm.get_frame()
+        self.stop_event.set()
 
-            # Apply filters
-            if frame is not None:
-                frame = sm.apply_filters(frame)
-                cv2.imshow(WINDOW_NAME, frame)
+        if self.server is not None:
+            try:
+                self.server.close()
+            except Exception:
+                pass
 
-            # ESC to exit
-            if cv2.waitKey(30) & 0xFF == 27:
-                break
+        for s in self.streams:
+            try:
+                s.stop()
+            except Exception:
+                pass
 
-    finally:
-        stop_event.set()
-        server.close()
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            pass
 
-        for s in streams:
-            s.stop()
+        self.sm = None
+        self.running = False
 
-        cv2.destroyAllWindows()
-        safe_print("Application exited cleanly.")
-        process_logs()
+
+def run_gui():
+    import video_tuber_gui
+
+    video_tuber_gui.main()
+
+if __name__ == "__main__":
+    engine = VideoTuberEngine()
+    engine.run()

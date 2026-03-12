@@ -1,4 +1,3 @@
-import json
 import os
 import shutil
 import subprocess
@@ -10,9 +9,8 @@ from tkinter import simpledialog
 from tkinter.scrolledtext import ScrolledText
 
 import midi_config as midi_cfg
+import midi_reader as midi_reader
 import video_tuber as vt
-
-LAUNCHPAD_S_COLOR_VALUES = [12, 13, 14, 15, 28, 29, 30, 31, 44, 45, 46, 47, 60, 61, 62, 63]
 
 
 class VideoTuberGUI(tk.Tk):
@@ -22,13 +20,12 @@ class VideoTuberGUI(tk.Tk):
         self.geometry("820x540")
 
         self._engine_thread = None
-        self._shutdown_event = None
-        self._stop_event = None
-        self._server = None
-        self._streams = []
-        self._state_machine = None
+        self._engine = vt.VideoTuberEngine()
         self._midi_wait_thread = None
         self._midi_waiting = False
+        self._midi_led = midi_reader.MidiLedController()
+        self._midi_reader_runner = None
+        self._midi_reader_running = False
 
         self._build_ui()
         self._ui_tick()
@@ -128,6 +125,28 @@ class VideoTuberGUI(tk.Tk):
         ttk.Button(device_row, text="Refresh Devices", command=self.refresh_midi_devices).pack(
             side=tk.LEFT, padx=(6, 0)
         )
+
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=8)
+
+        reader_label = ttk.Label(parent, text="MIDI Reader")
+        reader_label.pack(anchor=tk.W)
+
+        reader_row = ttk.Frame(parent)
+        reader_row.pack(fill=tk.X, pady=(6, 4))
+        ttk.Label(reader_row, text="Host").pack(side=tk.LEFT)
+        self.reader_host_entry = ttk.Entry(reader_row, width=18)
+        self.reader_host_entry.insert(0, midi_reader.SERVER_HOST)
+        self.reader_host_entry.pack(side=tk.LEFT, padx=(6, 12))
+
+        ttk.Label(reader_row, text="Port").pack(side=tk.LEFT)
+        self.reader_port_entry = ttk.Entry(reader_row, width=8)
+        self.reader_port_entry.insert(0, str(midi_reader.SERVER_PORT))
+        self.reader_port_entry.pack(side=tk.LEFT, padx=(6, 12))
+
+        self.reader_launch_btn = ttk.Button(
+            reader_row, text="Launch MIDI Reader", command=self.launch_midi_reader
+        )
+        self.reader_launch_btn.pack(side=tk.LEFT)
 
         ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=8)
 
@@ -236,8 +255,8 @@ class VideoTuberGUI(tk.Tk):
             self._log(message)
 
     def _update_state_label(self):
-        if self._state_machine is not None:
-            self.state_var.set(self._state_machine.current_state.name)
+        if self._engine.sm is not None:
+            self.state_var.set(self._engine.sm.current_state.name)
         else:
             self.state_var.set("-")
 
@@ -341,7 +360,9 @@ class VideoTuberGUI(tk.Tk):
             self._set_midi_actions_enabled(True)
             active_device = device_name or self.midi_device_var.get().strip()
             if active_device:
-                self._apply_midi_leds(active_device, buttons)
+                ok = self._midi_led.apply_config(active_device, buttons)
+                if not ok:
+                    self._log("No MIDI output device found for selected or config device")
             else:
                 self._log("No MIDI device selected; LEDs not updated")
             self._set_save_status(saved=True)
@@ -363,6 +384,47 @@ class VideoTuberGUI(tk.Tk):
             self._log("Launched MIDI config tool")
         except Exception as exc:
             self._log(f"Launch failed: {exc}")
+
+    def launch_midi_reader(self):
+        if self._midi_reader_running:
+            if self._midi_reader_runner:
+                self._midi_reader_runner.stop()
+            self._midi_reader_running = False
+            self._set_midi_reader_button_text()
+            self._log("MIDI reader stopped")
+            return
+
+        host = self.reader_host_entry.get().strip() or midi_reader.SERVER_HOST
+        port_raw = self.reader_port_entry.get().strip() or str(midi_reader.SERVER_PORT)
+        try:
+            port = int(port_raw)
+        except Exception:
+            self._log("Invalid MIDI reader port")
+            return
+
+        selected = self.midi_config_var.get().strip()
+        if not selected:
+            self._log("Select a MIDI config from the dropdown first")
+            return
+
+        config_path = os.path.join(os.getcwd(), "midi_configs", selected)
+        if not os.path.exists(config_path):
+            self._log("Selected MIDI config file not found")
+            return
+
+        self._midi_reader_runner = midi_reader.MidiReaderRunner(
+            host=host,
+            port=port,
+            config_path=config_path,
+            log_fn=self._log,
+        )
+        started = self._midi_reader_runner.start()
+        if started:
+            self._midi_reader_running = True
+            self._set_midi_reader_button_text()
+            self._log("MIDI reader started")
+        else:
+            self._log("MIDI reader already running")
 
     def add_midi_button(self):
         if self._midi_waiting:
@@ -423,7 +485,7 @@ class VideoTuberGUI(tk.Tk):
         buttons[note_key] = {
             "tag": "",
             "type": midi_cfg.ALLOWED_TYPES[0] if midi_cfg.ALLOWED_TYPES else "",
-            "color": 63,
+            "color": midi_cfg.DEFAULT_COLOR,
         }
         data["buttons"] = buttons
         self._write_midi_json(path, data)
@@ -433,12 +495,10 @@ class VideoTuberGUI(tk.Tk):
         self._log(f"Added note {note}")
 
     def _read_midi_json(self, path):
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        return midi_cfg.MidiConfigManager.load(path)
 
     def _write_midi_json(self, path, data):
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        midi_cfg.MidiConfigManager.save(path, data)
 
     def save_midi_config(self):
         if not self.current_midi_path:
@@ -463,7 +523,7 @@ class VideoTuberGUI(tk.Tk):
                 color_index = int(row["color"].get())
             except Exception:
                 color_index = 0
-            color_value = self._color_index_to_velocity(color_index)
+            color_value = midi_cfg.MidiConfigManager.color_index_to_velocity(color_index)
             buttons[str(note)] = {"tag": tag, "type": btn_type, "color": color_value}
 
         data["buttons"] = buttons
@@ -488,8 +548,7 @@ class VideoTuberGUI(tk.Tk):
         self.midi_rows = []
 
     def _load_midi_config_into_form(self, path):
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = midi_cfg.MidiConfigManager.load(path)
 
         device_name = data.get("device_name", "")
         buttons_raw = data.get("buttons", {})
@@ -502,7 +561,7 @@ class VideoTuberGUI(tk.Tk):
                     note = int(item.get("note"))
                     tag = item.get("tag", "")
                     btn_type = item.get("type", "")
-                    color = item.get("color", 63)
+                    color = item.get("color", midi_cfg.DEFAULT_COLOR)
                     entries.append((note, tag, btn_type, color))
                     buttons_for_leds[note] = {"tag": tag, "type": btn_type, "color": color}
                 except Exception:
@@ -513,7 +572,7 @@ class VideoTuberGUI(tk.Tk):
                     note = int(note_str)
                     tag = payload.get("tag", "")
                     btn_type = payload.get("type", "")
-                    color = payload.get("color", 63)
+                    color = payload.get("color", midi_cfg.DEFAULT_COLOR)
                     entries.append((note, tag, btn_type, color))
                     buttons_for_leds[note] = {"tag": tag, "type": btn_type, "color": color}
                 except Exception:
@@ -530,68 +589,12 @@ class VideoTuberGUI(tk.Tk):
 
         return device_name, buttons_for_leds
 
-    def _apply_midi_leds(self, device_name, buttons):
-        try:
-            import mido
-        except Exception as exc:
-            self._log(f"MIDI LED error: {exc}")
-            return
-
-        selected_name = self.midi_device_var.get().strip()
-        out_name = self._get_midi_output_name([selected_name, device_name])
-        if not out_name:
-            self._log("No MIDI output device found for selected or config device")
-            return
-
-        try:
-            with mido.open_output(out_name) as outport:
-                for note in range(128):
-                    outport.send(mido.Message("note_on", note=note, velocity=0))
-                for note, payload in buttons.items():
-                    color = payload.get("color", 63)
-                    color = self._normalize_color_value(color)
-                    outport.send(mido.Message("note_on", note=int(note), velocity=color))
-            self._log(f"LEDs updated for {len(buttons)} buttons")
-        except Exception as exc:
-            self._log(f"MIDI LED error: {exc}")
-
-    def _get_midi_output_name(self, device_names):
-        try:
-            import mido
-        except Exception:
-            return None
-
-        outputs = mido.get_output_names()
-        for name in device_names:
-            if name in outputs:
-                return name
-        for name in device_names:
-            if not name:
-                continue
-            prefix = name.rsplit(" ", 1)[0]
-            for out in outputs:
-                if out.startswith(prefix):
-                    return out
-        if len(outputs) == 1:
-            return outputs[0]
-        return None
-
     def _set_led(self, note, velocity):
-        try:
-            import mido
-        except Exception as exc:
-            self._log(f"MIDI LED error: {exc}")
-            return
-
         device_name = self.midi_device_var.get().strip()
-        out_name = self._get_midi_output_name([device_name])
-        if not out_name:
-            self._log(f"No MIDI output device found for '{device_name}'")
-            return
-
         try:
-            with mido.open_output(out_name) as outport:
-                outport.send(mido.Message("note_on", note=int(note), velocity=int(velocity)))
+            ok = self._midi_led.set_led(device_name, note, velocity)
+            if not ok:
+                self._log(f"No MIDI output device found for '{device_name}'")
         except Exception as exc:
             self._log(f"MIDI LED error: {exc}")
 
@@ -619,12 +622,12 @@ class VideoTuberGUI(tk.Tk):
         type_combo.pack(side=tk.LEFT, padx=(6, 0))
         type_combo.bind("<<ComboboxSelected>>", lambda event: self._set_save_status(saved=False))
 
-        color_index = self._velocity_to_color_index(color)
+        color_index = midi_cfg.MidiConfigManager.velocity_to_color_index(color)
         color_var = tk.IntVar(value=color_index)
         color_scale = tk.Scale(
             row,
             from_=0,
-            to=len(LAUNCHPAD_S_COLOR_VALUES) - 1,
+            to=len(midi_cfg.LAUNCHPAD_S_COLOR_VALUES) - 1,
             orient=tk.HORIZONTAL,
             length=120,
             variable=color_var,
@@ -791,14 +794,9 @@ class VideoTuberGUI(tk.Tk):
             messagebox.showerror("New MIDI Config", "File already exists.")
             return
 
-        data = {
-            "schema_version": 1,
-            "device_name": self.midi_device_var.get().strip(),
-            "buttons": {},
-        }
         try:
-            with open(new_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+            data = midi_cfg.MidiConfigManager.new_config(self.midi_device_var.get().strip())
+            midi_cfg.MidiConfigManager.save(new_path, data)
             self.refresh_midi_files()
             self.midi_config_var.set(new_filename)
             self.current_midi_path = new_path
@@ -815,6 +813,12 @@ class VideoTuberGUI(tk.Tk):
         self.add_button_btn.configure(state=state)
         self.save_config_btn.configure(state=state)
 
+    def _set_midi_reader_button_text(self):
+        if self._midi_reader_running:
+            self.reader_launch_btn.configure(text="Stop MIDI Reader")
+        else:
+            self.reader_launch_btn.configure(text="Launch MIDI Reader")
+
     def _set_save_status(self, saved):
         if saved is None:
             self.save_status_label.configure(text="", fg="green")
@@ -829,36 +833,11 @@ class VideoTuberGUI(tk.Tk):
             for row in self.midi_rows:
                 if row["note"] == note:
                     color_index = int(row["color"].get())
-                    color_value = self._color_index_to_velocity(color_index)
+                    color_value = midi_cfg.MidiConfigManager.color_index_to_velocity(color_index)
                     self._set_led(note, color_value)
                     break
         except Exception:
             pass
-
-    def _normalize_color_value(self, color):
-        try:
-            color = int(color)
-        except Exception:
-            return LAUNCHPAD_S_COLOR_VALUES[0]
-        return LAUNCHPAD_S_COLOR_VALUES[self._velocity_to_color_index(color)]
-
-    def _velocity_to_color_index(self, color):
-        try:
-            color = int(color)
-        except Exception:
-            return 0
-        if color in LAUNCHPAD_S_COLOR_VALUES:
-            return LAUNCHPAD_S_COLOR_VALUES.index(color)
-        closest = min(LAUNCHPAD_S_COLOR_VALUES, key=lambda v: abs(v - color))
-        return LAUNCHPAD_S_COLOR_VALUES.index(closest)
-
-    def _color_index_to_velocity(self, color_index):
-        try:
-            color_index = int(color_index)
-        except Exception:
-            color_index = 0
-        color_index = max(0, min(len(LAUNCHPAD_S_COLOR_VALUES) - 1, color_index))
-        return LAUNCHPAD_S_COLOR_VALUES[color_index]
 
     def _set_loaded_file_label(self, filename):
         if filename:
@@ -874,12 +853,7 @@ class VideoTuberGUI(tk.Tk):
         self.apply_config()
         self.reload_videos()
 
-        self._shutdown_event = threading.Event()
-        self._stop_event = threading.Event()
-        self._streams = []
-        self._server = None
-
-        self._engine_thread = threading.Thread(target=self._run_engine, daemon=True)
+        self._engine_thread = threading.Thread(target=self._engine.run, daemon=True)
         self._engine_thread.start()
         self.status_var.set("Running")
         self._log("Engine started")
@@ -888,72 +862,17 @@ class VideoTuberGUI(tk.Tk):
         if not self._engine_thread:
             return
 
-        self._shutdown_event.set()
-        if self._stop_event is not None:
-            self._stop_event.set()
-
-        if self._server is not None:
-            try:
-                self._server.close()
-            except Exception:
-                pass
-
+        self._engine.stop()
         self._engine_thread.join(timeout=3.0)
         self.status_var.set("Stopped")
         self._log("Engine stopped")
 
-    def _run_engine(self):
-        self._state_machine = vt.StateMachine(vt.STATES)
-
-        try:
-            for rule_name, init_fn, callback_fn in vt.RULES:
-                if rule_name == "MIC":
-                    self._streams.append(init_fn())
-                elif rule_name == "MIDI":
-                    self._server, server_thread = init_fn(self._stop_event)
-                else:
-                    init_fn()
-        except Exception as exc:
-            self._log(f"Init error: {exc}")
-            self.status_var.set("Stopped")
-            return
-
-        try:
-            import cv2
-
-            cv2.namedWindow(vt.WINDOW_NAME, cv2.WINDOW_NORMAL)
-            cv2.resizeWindow(vt.WINDOW_NAME, vt.SCREEN_WIDTH, vt.SCREEN_HEIGHT)
-
-            while not self._shutdown_event.is_set():
-                self._state_machine.update()
-                frame = self._state_machine.get_frame()
-                if frame is not None:
-                    frame = self._state_machine.apply_filters(frame)
-                    cv2.imshow(vt.WINDOW_NAME, frame)
-                if cv2.waitKey(30) & 0xFF == 27:
-                    self._shutdown_event.set()
-        finally:
-            if self._stop_event is not None:
-                self._stop_event.set()
-            if self._server is not None:
-                try:
-                    self._server.close()
-                except Exception:
-                    pass
-            for stream in self._streams:
-                try:
-                    stream.stop()
-                except Exception:
-                    pass
-            try:
-                import cv2
-
-                cv2.destroyAllWindows()
-            except Exception:
-                pass
-            self._state_machine = None
-
 
 if __name__ == "__main__":
+    app = VideoTuberGUI()
+    app.mainloop()
+
+
+def main():
     app = VideoTuberGUI()
     app.mainloop()
